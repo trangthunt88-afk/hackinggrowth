@@ -86,9 +86,14 @@
             <!-- Status Indicator for Firebase Sync -->
             <div class="px-4 py-2 text-xs font-semibold text-slate-500 flex items-center justify-between border-t border-slate-100 dark:border-slate-700/60">
                 <span>Đồng bộ thời gian thực:</span>
-                <span id="sync-status" class="inline-flex items-center text-emerald-600 dark:text-emerald-400">
-                    <i class="fa-solid fa-circle text-[8px] mr-1 animate-pulse"></i> <span id="sync-text">Đã kết nối</span>
+                <span id="sync-status" class="inline-flex items-center text-slate-500">
+                    <i class="fa-solid fa-circle text-[8px] mr-1 animate-pulse"></i> <span id="sync-text">Đang kết nối...</span>
                 </span>
+            </div>
+            <div class="px-4 pb-2">
+                <button id="logout-btn" onclick="signOutUser()" class="hidden w-full text-xs font-medium text-slate-500 hover:text-rose-600 dark:text-slate-400 dark:hover:text-rose-400 py-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700/50 transition">
+                    <i class="fa-solid fa-right-from-bracket mr-1"></i>Đăng xuất
+                </button>
             </div>
 
             <!-- Bottom Theme Toggle -->
@@ -626,30 +631,53 @@
         </div>
     </div>
 
+    <!-- MÀN HÌNH ĐĂNG NHẬP -->
+    <div id="login-overlay" class="fixed inset-0 z-[60] bg-pastel-bgLight dark:bg-slate-900 flex items-center justify-center p-6 hidden">
+        <div class="w-full max-w-sm bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl shadow-lg p-8 text-center">
+            <div class="w-14 h-14 mx-auto rounded-2xl bg-amber-300 flex items-center justify-center font-bold text-amber-900 text-2xl shadow-md">TT</div>
+            <h2 class="mt-4 text-xl font-bold text-slate-800 dark:text-white">Thu Trang Work</h2>
+            <p class="mt-2 text-sm text-slate-500 dark:text-slate-400">Đăng nhập để dữ liệu được đồng bộ trên mọi thiết bị.</p>
+            <button onclick="signInWithGoogle()" class="mt-6 w-full flex items-center justify-center space-x-2 px-4 py-3 rounded-xl bg-amber-400 hover:bg-amber-500 text-amber-950 font-semibold text-sm transition">
+                <i class="fa-brands fa-google"></i>
+                <span>Đăng nhập bằng Google</span>
+            </button>
+            <p id="login-error" class="hidden mt-3 text-xs text-rose-600"></p>
+        </div>
+    </div>
+
     <!-- FIREBASE REALTIME & APP SCRIPT -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, onSnapshot, collection, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, collection, deleteDoc, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'thu-trang-work-app';
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
-            apiKey: "demo",
-            projectId: "demo",
-            appId: "demo"
+        // =====================================================================
+        // BƯỚC QUAN TRỌNG: DÁN CẤU HÌNH FIREBASE CỦA BẠN VÀO ĐÂY
+        // (Firebase Console → Project settings → Your apps → Web app → firebaseConfig)
+        // =====================================================================
+        const firebaseConfig = {
+            apiKey: "AIzaSyAUgniCMHhHvtT1sF7m9fZyW1IQl6TCTuM",
+            authDomain: "vcrfd-92b84.firebaseapp.com",
+            projectId: "vcrfd-92b84",
+            storageBucket: "vcrfd-92b84.firebasestorage.app",
+            messagingSenderId: "270409674153",
+            appId: "1:270409674153:web:36fced4ce588934fd168b8"
+        };
+        const isConfigured = !String(firebaseConfig.apiKey).startsWith("DAN_");
+
+        const DEFAULT_HEALTH = { waterGoal: 2000, waterCurrent: 0, sleepGoalTime: "22:30", todayMood: "great" };
+        const readLocal = (key, fallback) => {
+            try { return JSON.parse(localStorage.getItem(key) || fallback); } catch (e) { return JSON.parse(fallback); }
         };
 
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-
-        let user = null;
+        let auth = null, db = null, user = null;
+        let unsubs = [];
 
         // Global Dynamic State
         window.state = {
-            tasks: JSON.parse(localStorage.getItem('tt_tasks_fallback') || '[]'),
-            health: JSON.parse(localStorage.getItem('tt_health_fallback') || '{"waterGoal":2000,"waterCurrent":0,"sleepGoalTime":"22:30","todayMood":"great"}'),
-            activityLogs: JSON.parse(localStorage.getItem('tt_logs_fallback') || '[]'),
+            tasks: readLocal('tt_tasks_fallback', '[]'),
+            health: readLocal('tt_health_fallback', JSON.stringify(DEFAULT_HEALTH)),
+            activityLogs: readLocal('tt_logs_fallback', '[]'),
             activeFilterTab: 'overdue',
             historyView: 'day',
             selectedHistoryDate: new Date().toISOString().split('T')[0],
@@ -657,102 +685,121 @@
             selectedYear: new Date().getFullYear()
         };
 
-        async function initAuthAndSync() {
+        function setSyncStatus(kind, text) {
+            const wrap = document.getElementById('sync-status');
+            const t = document.getElementById('sync-text');
+            if (t) t.textContent = text;
+            if (!wrap) return;
+            const colors = {
+                ok: 'text-emerald-600 dark:text-emerald-400',
+                warn: 'text-amber-600 dark:text-amber-400',
+                off: 'text-slate-500'
+            };
+            wrap.className = 'inline-flex items-center ' + colors[kind];
+        }
+
+        function showLogin(show) {
+            const el = document.getElementById('login-overlay');
+            if (el) el.classList.toggle('hidden', !show);
+            const lo = document.getElementById('logout-btn');
+            if (lo) lo.classList.toggle('hidden', show || !user);
+        }
+
+        // Dữ liệu của mỗi tài khoản nằm riêng: users/{uid}/...
+        const colRef = (name) => collection(db, 'users', user.uid, name);
+        const healthRef = () => doc(db, 'users', user.uid, 'health', 'daily');
+
+        function unsubscribeAll() {
+            unsubs.forEach(fn => { try { fn(); } catch (e) {} });
+            unsubs = [];
+        }
+
+        function handleSyncError(label, err) {
+            console.error(label, err);
+            const denied = err && err.code === 'permission-denied';
+            setSyncStatus('warn', denied ? 'Lỗi quyền (kiểm tra Rules)' : 'Lỗi đồng bộ');
+        }
+
+        // Lần đầu đăng nhập: nếu trên cloud còn trống mà máy này đã có dữ liệu cũ, đẩy dữ liệu đó lên.
+        async function uploadLocalTasks() {
             try {
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    const cred = await signInWithCustomToken(auth, __initial_auth_token);
-                    user = cred.user;
-                } else {
-                    const cred = await signInAnonymously(auth);
-                    user = cred.user;
-                }
-            } catch (err) {
-                console.warn("Auth warning (using local mode if offline):", err);
-            }
-
-            onAuthStateChanged(auth, (u) => {
-                user = u;
-                const syncText = document.getElementById('sync-text');
-                if (user) {
-                    if (syncText) syncText.textContent = 'Đã kết nối';
-                    subscribeRealtimeData();
-                } else {
-                    if (syncText) syncText.textContent = 'Chế độ ngoại tuyến';
-                }
-            });
-
-            // Trigger initial render with local fallback data
-            renderAll();
+                const batch = writeBatch(db);
+                window.state.tasks.forEach((t, i) => {
+                    const id = t.id || ('task_' + Date.now() + '_' + i);
+                    batch.set(doc(db, 'users', user.uid, 'tasks', id), { ...t, id });
+                });
+                await batch.commit();
+            } catch (err) { handleSyncError('Upload tasks', err); }
         }
 
-        function getTasksCollection() {
-            return collection(db, 'artifacts', appId, 'public', 'data', 'tasks');
-        }
-
-        function getHealthDoc() {
-            return doc(db, 'artifacts', appId, 'public', 'data', 'health', 'daily_health');
-        }
-
-        function getLogsCollection() {
-            return collection(db, 'artifacts', appId, 'public', 'data', 'activity_logs');
+        async function uploadLocalLogs() {
+            try {
+                const batch = writeBatch(db);
+                window.state.activityLogs.slice(0, 400).forEach((l, i) => {
+                    batch.set(doc(db, 'users', user.uid, 'activity_logs', 'log_' + Date.now() + '_' + i), l);
+                });
+                await batch.commit();
+            } catch (err) { handleSyncError('Upload logs', err); }
         }
 
         function subscribeRealtimeData() {
-            if (!user) return;
+            if (!user || !db) return;
+            unsubscribeAll();
+            let firstTasks = true, firstHealth = true, firstLogs = true;
 
-            // Tasks collection Realtime Sync
-            onSnapshot(getTasksCollection(), (snapshot) => {
-                if (!snapshot.empty) {
-                    window.state.tasks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    localStorage.setItem('tt_tasks_fallback', JSON.stringify(window.state.tasks));
-                    renderAll();
+            unsubs.push(onSnapshot(colRef('tasks'), (snap) => {
+                if (firstTasks && snap.empty && window.state.tasks.length) {
+                    firstTasks = false;
+                    uploadLocalTasks();
+                    return;
                 }
-            }, (err) => console.error("Tasks sync error:", err));
+                firstTasks = false;
+                window.state.tasks = snap.docs.map(d => ({ ...d.data(), id: d.id }));
+                localStorage.setItem('tt_tasks_fallback', JSON.stringify(window.state.tasks));
+                renderAll();
+                setSyncStatus('ok', 'Đã đồng bộ');
+            }, (err) => handleSyncError('Tasks sync error:', err)));
 
-            // Health Document Sync
-            onSnapshot(getHealthDoc(), (docSnap) => {
-                if (docSnap.exists()) {
-                    window.state.health = docSnap.data();
+            unsubs.push(onSnapshot(healthRef(), (snap) => {
+                if (snap.exists()) {
+                    firstHealth = false;
+                    window.state.health = { ...DEFAULT_HEALTH, ...snap.data() };
                     localStorage.setItem('tt_health_fallback', JSON.stringify(window.state.health));
                     renderAll();
+                } else if (firstHealth) {
+                    firstHealth = false;
+                    setDoc(healthRef(), window.state.health).catch(err => handleSyncError('Upload health', err));
                 }
-            }, (err) => console.error("Health sync error:", err));
+            }, (err) => handleSyncError('Health sync error:', err)));
 
-            // Activity logs sync
-            onSnapshot(getLogsCollection(), (snapshot) => {
-                if (!snapshot.empty) {
-                    window.state.activityLogs = snapshot.docs
-                        .map(doc => ({ id: doc.id, ...doc.data() }))
-                        .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-                    localStorage.setItem('tt_logs_fallback', JSON.stringify(window.state.activityLogs));
-                    renderActivityLogs();
+            unsubs.push(onSnapshot(colRef('activity_logs'), (snap) => {
+                if (firstLogs && snap.empty && window.state.activityLogs.length) {
+                    firstLogs = false;
+                    uploadLocalLogs();
+                    return;
                 }
-            }, (err) => console.error("Logs sync error:", err));
+                firstLogs = false;
+                window.state.activityLogs = snap.docs
+                    .map(d => ({ ...d.data(), id: d.id }))
+                    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+                localStorage.setItem('tt_logs_fallback', JSON.stringify(window.state.activityLogs));
+                renderActivityLogs();
+            }, (err) => handleSyncError('Logs sync error:', err)));
         }
 
         window.saveTaskToCloud = async function(taskData) {
             const docId = taskData.id || ('task_' + Date.now());
-            const updatedTask = { ...taskData, id: docId, userId: user ? user.uid : 'anonymous' };
+            const updatedTask = { ...taskData, id: docId, userId: user ? user.uid : 'local' };
 
-            // Update local state & fallback immediately
             const index = window.state.tasks.findIndex(t => t.id === docId);
-            if (index >= 0) {
-                window.state.tasks[index] = updatedTask;
-            } else {
-                window.state.tasks.push(updatedTask);
-            }
+            if (index >= 0) window.state.tasks[index] = updatedTask;
+            else window.state.tasks.push(updatedTask);
             localStorage.setItem('tt_tasks_fallback', JSON.stringify(window.state.tasks));
             renderAll();
 
-            // Sync to Firebase if connected
             try {
-                if (user) {
-                    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'tasks', docId);
-                    await setDoc(docRef, updatedTask);
-                }
-            } catch (err) {
-                console.error("Cloud save failed, saved locally:", err);
-            }
+                if (user && db) await setDoc(doc(db, 'users', user.uid, 'tasks', docId), updatedTask);
+            } catch (err) { handleSyncError('Cloud save failed:', err); }
         };
 
         window.deleteTaskFromCloud = async function(id) {
@@ -761,13 +808,8 @@
             renderAll();
 
             try {
-                if (user) {
-                    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'tasks', id);
-                    await deleteDoc(docRef);
-                }
-            } catch (err) {
-                console.error("Cloud delete failed, deleted locally:", err);
-            }
+                if (user && db) await deleteDoc(doc(db, 'users', user.uid, 'tasks', id));
+            } catch (err) { handleSyncError('Cloud delete failed:', err); }
         };
 
         window.saveHealthToCloud = async function(healthData) {
@@ -776,12 +818,8 @@
             renderDashboard();
 
             try {
-                if (user) {
-                    await setDoc(getHealthDoc(), { ...healthData, userId: user.uid });
-                }
-            } catch (err) {
-                console.error("Health cloud save error:", err);
-            }
+                if (user && db) await setDoc(healthRef(), healthData);
+            } catch (err) { handleSyncError('Health cloud save error:', err); }
         };
 
         window.logActivityToCloud = async function(type, text) {
@@ -789,7 +827,7 @@
                 type,
                 text,
                 timestamp: new Date().toISOString(),
-                userId: user ? user.uid : 'anonymous'
+                userId: user ? user.uid : 'local'
             };
 
             window.state.activityLogs.unshift(logObj);
@@ -797,21 +835,67 @@
             renderActivityLogs();
 
             try {
-                if (user) {
-                    const logId = 'log_' + Date.now();
-                    const logRef = doc(db, 'artifacts', appId, 'public', 'data', 'activity_logs', logId);
-                    await setDoc(logRef, logObj);
-                }
+                if (user && db) await setDoc(doc(db, 'users', user.uid, 'activity_logs', 'log_' + Date.now()), logObj);
+            } catch (err) { handleSyncError('Log error:', err); }
+        };
+
+        window.signInWithGoogle = async function() {
+            const errEl = document.getElementById('login-error');
+            if (errEl) errEl.classList.add('hidden');
+            try {
+                await signInWithPopup(auth, new GoogleAuthProvider());
             } catch (err) {
-                console.error("Log error:", err);
+                console.error('Login error:', err);
+                let msg = 'Đăng nhập không thành công. Vui lòng thử lại.';
+                if (err.code === 'auth/unauthorized-domain') msg = 'Tên miền chưa được cho phép. Hãy thêm trangthunt88-afk.github.io vào Authorized domains trong Firebase.';
+                else if (err.code === 'auth/operation-not-allowed') msg = 'Chưa bật đăng nhập Google trong Firebase (Authentication → Sign-in method).';
+                else if (err.code === 'auth/popup-blocked') msg = 'Trình duyệt đã chặn cửa sổ đăng nhập. Hãy cho phép popup rồi thử lại.';
+                else if (err.code === 'auth/popup-closed-by-user') msg = 'Bạn đã đóng cửa sổ đăng nhập.';
+                if (errEl) { errEl.textContent = msg; errEl.classList.remove('hidden'); }
             }
         };
 
-        window.addEventListener('load', () => {
-            initAuthAndSync();
+        window.signOutUser = async function() {
+            if (!auth) return;
+            unsubscribeAll();
+            ['tt_tasks_fallback', 'tt_health_fallback', 'tt_logs_fallback'].forEach(k => localStorage.removeItem(k));
+            window.state.tasks = [];
+            window.state.health = { ...DEFAULT_HEALTH };
+            window.state.activityLogs = [];
+            renderAll();
+            await signOut(auth);
+        };
+
+        function initApp() {
             setupHeaderDates();
             setRandomQuote();
-        });
+            renderAll();
+
+            if (!isConfigured) {
+                setSyncStatus('off', 'Chưa cấu hình (chỉ lưu trên máy này)');
+                return;
+            }
+
+            const app = initializeApp(firebaseConfig);
+            auth = getAuth(app);
+            db = getFirestore(app);
+            setSyncStatus('warn', 'Đang kết nối...');
+
+            onAuthStateChanged(auth, (u) => {
+                user = u;
+                if (u) {
+                    showLogin(false);
+                    setSyncStatus('warn', 'Đang đồng bộ...');
+                    subscribeRealtimeData();
+                } else {
+                    unsubscribeAll();
+                    setSyncStatus('off', 'Chưa đăng nhập');
+                    showLogin(true);
+                }
+            });
+        }
+
+        window.addEventListener('load', initApp);
     </script>
 
     <script>
