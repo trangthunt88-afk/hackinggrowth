@@ -405,8 +405,8 @@
 
                             <!-- Reminder config -->
                             <div class="bg-slate-50 dark:bg-slate-700/30 p-3 rounded-xl border border-slate-200/60 dark:border-slate-700 flex items-center justify-between text-xs">
-                                <span class="text-slate-600 dark:text-slate-300 font-medium">Nhắc uống nước tự động trên thiết bị</span>
-                                <span id="water-notif-badge" class="px-2 py-1 bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300 font-bold rounded">Đang bật</span>
+                                <span class="text-slate-600 dark:text-slate-300 font-medium">Nhắc uống nước qua Google Calendar (9h–21h, mỗi 2 giờ)</span>
+                                <span id="water-notif-badge" class="px-2 py-1 bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300 font-bold rounded">Qua Calendar</span>
                             </div>
                         </div>
 
@@ -435,7 +435,7 @@
                                     </div>
                                     <div class="flex items-center justify-between text-xs">
                                         <span class="text-slate-600 dark:text-slate-300">Thông báo nhắc giờ ngủ:</span>
-                                        <span class="font-semibold text-emerald-600 dark:text-emerald-400">Nhắc trước 30 phút</span>
+                                        <span class="font-semibold text-emerald-600 dark:text-emerald-400">Qua Google Calendar, trước 30 phút</span>
                                     </div>
                                 </div>
 
@@ -685,6 +685,17 @@
             selectedYear: new Date().getFullYear()
         };
 
+        // Lượng nước tự về 0 khi sang ngày mới
+        function rollWaterDay() {
+            const today = getTodayStr();
+            if (window.state.health.waterDate !== today) {
+                window.state.health = { ...window.state.health, waterCurrent: 0, waterDate: today };
+                localStorage.setItem('tt_health_fallback', JSON.stringify(window.state.health));
+                if (user && db) setDoc(healthRef(), window.state.health).catch(err => handleSyncError('Water roll', err));
+            }
+        }
+        window.rollWaterDay = rollWaterDay;
+
         function setSyncStatus(kind, text) {
             const wrap = document.getElementById('sync-status');
             const t = document.getElementById('sync-text');
@@ -764,6 +775,7 @@
                 if (snap.exists()) {
                     firstHealth = false;
                     window.state.health = { ...DEFAULT_HEALTH, ...snap.data() };
+                    rollWaterDay();
                     localStorage.setItem('tt_health_fallback', JSON.stringify(window.state.health));
                     renderAll();
                 } else if (firstHealth) {
@@ -1225,6 +1237,8 @@
         }
 
         async function addWater(amount) {
+            if (window.rollWaterDay) window.rollWaterDay();
+            state.health.waterDate = getTodayStr();
             state.health.waterCurrent = (state.health.waterCurrent || 0) + amount;
             await window.saveHealthToCloud(state.health);
             await window.logActivityToCloud('HEALTH', `Đã uống thêm ${amount}ml nước`);
